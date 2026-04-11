@@ -1,4 +1,4 @@
-Gradient Backprop + Reversal Strength | NSE Scanner
+# AMA — Gradient Backprop + Reversal Strength | NSE Scanner
 
 ## Setup
 
