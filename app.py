@@ -607,7 +607,7 @@ if results:
         p_fmt = f"₹{r['price']:,.0f}" if r["price"] >= 100 else f"₹{r['price']:,.2f}"
         tbody += (
             f'<tr class="{rc}">'
-            f'<td><span class="tk" title="{r[chr(34)+"name"+chr(34)]}">{r["ticker"]}</span></td>'
+            # f'<td><span class="tk" title="{r[chr(34)+"name"+chr(34)]}">{r["ticker"]}</span></td>'
             f'<td>{p_fmt}</td>'
             f'<td>{_chg(r["chg"])}</td>'
             f'<td class="hl-cyan">₹{r["hlc3"]:,.2f}</td>'
