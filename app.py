@@ -1,5 +1,5 @@
 """
-AMA — Gradient Backprop + Reversal Strength
+AMA  — Gradient Backprop + Reversal Strength
 NIFTY 500 Full Universe Scanner | 1-Hour Auto-Refresh | White Theme
 """
 
@@ -126,8 +126,7 @@ table.ama thead th {
     padding: 8px 12px; text-align: right; border-bottom: 1px solid #e8eaf0;
     position: sticky; top: 0; z-index: 5; white-space: nowrap;
 }
-table.ama thead th:nth-child(1){ text-align:left; min-width:80px; }
-table.ama thead th:nth-child(2){ text-align:left; min-width:160px; }
+table.ama thead th:nth-child(1){ text-align:left; min-width:90px; }
 table.ama thead th.th-sig { text-align:center; }
 
 table.ama tbody tr {
@@ -145,13 +144,11 @@ table.ama tbody td {
     font-family: 'JetBrains Mono', monospace; font-size: 11px; white-space: nowrap;
 }
 table.ama tbody td:nth-child(1) { text-align:left; font-family:'Inter',sans-serif; }
-table.ama tbody td:nth-child(2) { text-align:left; font-family:'Inter',sans-serif; }
 table.ama tbody td.td-sig { text-align:center; }
 
 /* cell colours */
 .tk   { font-weight: 700; color: #1a1d2e; font-size: 11px; letter-spacing: -0.2px; }
 .tk a { text-decoration: none; color: inherit; }
-.nm   { font-size: 10px; color: #64748b; font-family: 'Inter', sans-serif !important; }
 .pos  { color: #16a34a; font-weight: 600; }
 .neg  { color: #dc2626; font-weight: 600; }
 .neu  { color: #64748b; }
@@ -610,8 +607,7 @@ if results:
         p_fmt = f"₹{r['price']:,.0f}" if r["price"] >= 100 else f"₹{r['price']:,.2f}"
         tbody += (
             f'<tr class="{rc}">'
-            f'<td><span class="tk">{r["ticker"]}</span></td>'
-            f'<td><span class="nm">{r["name"]}</span></td>'
+            f'<td><span class="tk" title="{r[chr(34)+"name"+chr(34)]}">{r["ticker"]}</span></td>'
             f'<td>{p_fmt}</td>'
             f'<td>{_chg(r["chg"])}</td>'
             f'<td class="hl-cyan">₹{r["hlc3"]:,.2f}</td>'
@@ -636,7 +632,7 @@ if results:
       <div class="tbl-scroll">
         <table class="ama">
           <thead><tr>
-            <th>TICKER</th><th>NAME</th><th>PRICE</th><th>CHG %</th>
+            <th>TICKER</th><th>PRICE</th><th>CHG %</th>
             <th>HLC3</th><th>AMA</th><th>EMA70</th>
             <th>f'(x)%</th><th>f''(x)%</th><th>f'''(x)%</th>
             <th>RSI</th><th>STR %</th><th>RATING</th><th class="th-sig">SIGNAL</th>
@@ -706,7 +702,7 @@ else:
 st.markdown("""
 <div style="text-align:center;color:#cbd5e1;font-size:9px;letter-spacing:1px;
      border-top:1px solid #e8eaf0;padding:10px 0;margin-top:10px;">
-  AMA v3.0  ·  GRADIENT BACKPROP ENGINE  ·  NIFTY 500  ·  Yahoo Finance  ·  1-hr refresh  ·  Not investment advice
+  AMA  ·  GRADIENT BACKPROP ENGINE  ·  NIFTY 500  ·  Yahoo Finance  ·  1-hr refresh  ·  Not investment advice
 </div>
 """, unsafe_allow_html=True)
 
