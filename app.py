@@ -385,7 +385,7 @@ st.markdown(f"""
   <div class="nav-brand">
     <div class="nav-logo">⚡</div>
     <div>
-      <div class="nav-title">AMA v3.0 — Gradient Backprop + Reversal Strength</div>
+      <div class="nav-title">AMA — Gradient Backprop + Reversal Strength</div>
       <div class="nav-sub">NIFTY 500 UNIVERSE  ·  KAMA  ·  f'(x) f''(x) f'''(x)  ·  1-HR REFRESH  ·  {nxt}</div>
     </div>
   </div>
