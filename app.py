@@ -10,6 +10,7 @@ import numpy as np
 import time
 import smtplib
 import ssl
+import requests
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from datetime import datetime, timedelta
@@ -17,6 +18,7 @@ from zoneinfo import ZoneInfo
 from nifty500 import NIFTY500
 
 IST = ZoneInfo('Asia/Kolkata')  # UTC+5:30
+
 st.set_page_config(
     page_title="AMA Gradient — NIFTY 500",
     page_icon="⚡",
