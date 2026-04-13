@@ -443,8 +443,8 @@ def send_ntfy_push(topic: str, alerts: list, scan_time: str) -> tuple[bool, str]
         lines.append(f"…and {len(alerts)-10} more signals")
 
     body  = "\n".join(lines)
-    emoji = "🚀" if bull and not bear else ("⚠️" if bear and not bull else "⚡")
-    title = f"{emoji} {len(bull)}↑ {len(bear)}↓ NIFTY 500 — VERY STRONG Signals"
+    #emoji = "🚀" if bull and not bear else ("⚠️" if bear and not bull else "⚡")
+    title = f"{len(bull)}^ {len(bear)}v NIFTY 500 — VERY STRONG Signals"
 
     try:
         resp = requests.post(
