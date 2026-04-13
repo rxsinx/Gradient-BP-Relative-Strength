@@ -18,7 +18,9 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-REFRESH_SECS = 3600
+REFRESH_SECS = 1800
+from zoneinfo import ZoneInfo
+IST = ZoneInfo('Asia/Kolkata')  # UTC+5:30
 
 # ── CSS ────────────────────────────────────────────────────────────────────────
 st.markdown("""
