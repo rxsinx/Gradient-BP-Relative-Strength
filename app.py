@@ -9,6 +9,8 @@ import pandas as pd
 import numpy as np
 import time
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+IST = ZoneInfo('Asia/Kolkata')  # UTC+5:30
 from nifty500 import NIFTY500
 
 st.set_page_config(
@@ -19,8 +21,7 @@ st.set_page_config(
 )
 
 REFRESH_SECS = 1800
-from zoneinfo import ZoneInfo
-IST = ZoneInfo('Asia/Kolkata')  # UTC+5:30
+
 
 # ── CSS ────────────────────────────────────────────────────────────────────────
 st.markdown("""
@@ -368,11 +369,9 @@ params = dict(
 )
 
 # ── NAV BAR ───────────────────────────────────────────────────────────────────
-now  = datetime.now()
-mkt  = (now.weekday() < 5 and
-        timedelta(hours=9, minutes=15)
-        <= timedelta(hours=now.hour, minutes=now.minute)
-        <= timedelta(hours=15, minutes=30))
+now  = datetime.now(IST)
+mkt_minutes = now.hour * 60 + now.minute
+mkt  = (now.weekday() < 5 and 9*60+15 <= mkt_minutes <= 15*60+30)
 mkt_html = (f'<span class="mkt-open">● NSE OPEN</span>' if mkt
             else f'<span class="mkt-close">● NSE CLOSED</span>')
 
@@ -470,7 +469,7 @@ if run_btn:
             })
     st.session_state.alerts    = (alerts + st.session_state.alerts)[:100]
     st.session_state.results   = results
-    st.session_state.last_scan = datetime.now()
+    st.session_state.last_scan = datetime.now(IST)
     st.session_state.scanned   = True
     if failed:
         st.caption(f"⚠️ {len(failed)} tickers failed to download: {', '.join(failed[:10])}{'…' if len(failed)>10 else ''}")
@@ -668,7 +667,7 @@ if results:
             "Rating":   get_rating(r["strength"])[0] if r["signal"] != "NONE" else "—",
             "Signal":   r["signal"], "ER":     r["er"],
         } for r in rows])
-        ts = datetime.now().strftime("%Y%m%d_%H%M")
+        ts = datetime.now(IST).strftime("%Y%m%d_%H%M")
         st.download_button("⬇ Export CSV", df_out.to_csv(index=False),
                            file_name=f"AMA_NIFTY500_{ts}.csv",
                            mime="text/csv", use_container_width=True)
@@ -712,6 +711,6 @@ st.markdown("""
 
 # ── AUTO RERUN ─────────────────────────────────────────────────────────────────
 if st.session_state.last_scan:
-    if int((datetime.now() - st.session_state.last_scan).total_seconds()) >= REFRESH_SECS:
+    if int((datetime.now(IST) - st.session_state.last_scan).total_seconds()) >= REFRESH_SECS:
         time.sleep(1)
         st.rerun()
