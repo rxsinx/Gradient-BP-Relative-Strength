@@ -1,6 +1,6 @@
 """
 AMA  — Gradient Backprop + Reversal Strength
-NIFTY 500 Full Universe Scanner | 1-Hour Auto-Refresh | White Theme
+NIFTY 500 Full Universe Scanner | 1-Hour Auto-Refresh | White Theme | Gmail Alerts
 """
 
 import streamlit as st
@@ -17,7 +17,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from nifty500 import NIFTY500
 
-IST = ZoneInfo('Asia/Kolkata')  # UTC+5:30
+IST = ZoneInfo('Asia/Kolkata')
 
 st.set_page_config(
     page_title="AMA Gradient — NIFTY 500",
@@ -26,8 +26,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-REFRESH_SECS = 1800
-
+REFRESH_SECS = 1800   # 30 minutes during market hours
 
 # ── CSS ────────────────────────────────────────────────────────────────────────
 st.markdown("""
@@ -416,54 +415,84 @@ def send_gmail_alert(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# MOBILE PUSH ALERT  (ntfy.sh — free, no account needed)
+# MOBILE PUSH ALERTS
 # ══════════════════════════════════════════════════════════════════════════════
+
+def _build_push_body(alerts: list, scan_time: str) -> tuple[str, str]:
+    """Build ASCII-safe title + body for push notifications."""
+    bull = [a for a in alerts if a["signal"] == "BULL"]
+    bear = [a for a in alerts if a["signal"] == "BEAR"]
+    title = f"AMA NIFTY500 | {len(bull)} BULL {len(bear)} BEAR | {scan_time} IST"
+    lines = [f"VERY STRONG signals at {scan_time} IST"]
+    if bull:
+        lines.append("BULL: " + ", ".join(
+            f"{a['ticker']}({a['str']:.0f}%)" for a in bull[:6]
+        ))
+    if bear:
+        lines.append("BEAR: " + ", ".join(
+            f"{a['ticker']}({a['str']:.0f}%)" for a in bear[:6]
+        ))
+    if len(alerts) > 12:
+        lines.append(f"...and {len(alerts)-12} more")
+    return title, "\n".join(lines)
+
+
 def send_ntfy_push(topic: str, alerts: list, scan_time: str) -> tuple[bool, str]:
     """
-    Send mobile push notification via ntfy.sh.
-    Install 'ntfy' app on Android / iOS and subscribe to your topic.
-    Topic is just a unique string you choose — like 'ama-nifty-yourname'.
+    Send push via ntfy.sh. Free, no account.
+    Install 'ntfy' on Android/iOS → subscribe to your topic name.
+    Topic: use only letters, numbers, hyphens (e.g. ama-nifty-raj2024)
     """
     if not topic or not alerts:
         return False, "No topic or no alerts"
-
-    bull = [a for a in alerts if a["signal"] == "BULL"]
-    bear = [a for a in alerts if a["signal"] == "BEAR"]
-
-    lines = [f"⚡ AMA VERY STRONG signals at {scan_time} IST"]
-    if bull:
-        lines.append("↑ BULL: " + ", ".join(
-            f"{a['ticker']} {a['str']:.0f}%" for a in bull[:5]
-        ))
-    if bear:
-        lines.append("↓ BEAR: " + ", ".join(
-            f"{a['ticker']} {a['str']:.0f}%" for a in bear[:5]
-        ))
-    if len(alerts) > 10:
-        lines.append(f"…and {len(alerts)-10} more signals")
-
-    body  = "\n".join(lines)
-    #emoji = "🚀" if bull and not bear else ("⚠️" if bear and not bull else "⚡")
-    title = f"{len(bull)}^ {len(bear)}v NIFTY 500 — VERY STRONG Signals"
-
+    topic_clean = topic.strip().replace(" ", "-")
+    title, body = _build_push_body(alerts, scan_time)
     try:
-        resp = requests.post(
-            f"https://ntfy.sh/{topic.strip()}",
+        import requests as _req
+        resp = _req.post(
+            f"https://ntfy.sh/{topic_clean}",
             data=body.encode("utf-8"),
             headers={
                 "Title":    title,
                 "Priority": "high",
-                "Tags":     "chart_with_upwards_trend,bell",
+                "Tags":     "bell",
+                "Content-Type": "text/plain",
             },
-            timeout=10,
+            timeout=12,
         )
         if resp.status_code == 200:
-            return True, f"Push sent to ntfy topic '{topic}'"
-        return False, f"ntfy error {resp.status_code}: {resp.text[:100]}"
-    except requests.exceptions.ConnectionError:
-        return False, "❌ No internet connection"
+            return True, f"Push sent to topic '{topic_clean}'"
+        return False, f"ntfy HTTP {resp.status_code}: {resp.text[:120]}"
     except Exception as e:
-        return False, f"❌ ntfy error: {e}"
+        return False, f"ntfy error: {str(e)[:120]}"
+
+
+def send_telegram_push(bot_token: str, chat_id: str,
+                       alerts: list, scan_time: str) -> tuple[bool, str]:
+    """
+    Send push via Telegram Bot.
+    1. Open Telegram → search @BotFather → /newbot → copy the token
+    2. Send any message to your bot, then open:
+       https://api.telegram.org/bot<TOKEN>/getUpdates
+       and copy your chat_id from the response.
+    """
+    if not bot_token or not chat_id or not alerts:
+        return False, "Missing token, chat_id, or no alerts"
+    title, body = _build_push_body(alerts, scan_time)
+    text = f"*{title}*\n\n{body}"
+    try:
+        import requests as _req
+        resp = _req.post(
+            f"https://api.telegram.org/bot{bot_token.strip()}/sendMessage",
+            json={"chat_id": chat_id.strip(), "text": text, "parse_mode": "Markdown"},
+            timeout=12,
+        )
+        if resp.status_code == 200:
+            return True, f"Telegram sent to chat_id {chat_id}"
+        err = resp.json().get("description", resp.text[:80])
+        return False, f"Telegram error: {err}"
+    except Exception as e:
+        return False, f"Telegram error: {str(e)[:120]}"
 
 # ══════════════════════════════════════════════════════════════════════════════
 # DATA FETCH
@@ -565,46 +594,92 @@ st.markdown(f"""
 with st.expander("🔔  Alert Settings  —  Gmail + Mobile Push (ntfy)", expanded=False):
     tab_gmail, tab_push = st.tabs(["📧  Gmail Alerts", "📱  Mobile Push (ntfy)"])
 
-    # ── ntfy tab ──────────────────────────────────────────────────────────────
+    # ── Mobile Push tab ───────────────────────────────────────────────────────
     with tab_push:
-        st.markdown("""
-        <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;
-             padding:10px 14px;margin-bottom:10px;font-size:11px;color:#1e40af;">
-        <b>📱 Mobile Push via ntfy.sh — Free, no account, works on Android &amp; iOS</b><br><br>
-        <b>Step 1 — Install the app:</b><br>
-        &nbsp;&nbsp;• Android: <a href="https://play.google.com/store/apps/details?id=io.heckel.ntfy"
-          target="_blank" style="color:#1d4ed8;">Play Store → search "ntfy"</a><br>
-        &nbsp;&nbsp;• iPhone: <a href="https://apps.apple.com/app/ntfy/id1625396347"
-          target="_blank" style="color:#1d4ed8;">App Store → search "ntfy"</a><br><br>
-        <b>Step 2 — Choose a unique topic name</b> e.g. <code>ama-nifty-raj2024</code>
-          (keep it private — anyone who knows it can subscribe)<br>
-        <b>Step 3 — In the ntfy app:</b> tap ＋ → enter exactly the same topic name → Subscribe<br>
-        <b>Step 4 — Enter the topic below, enable push, click Test</b><br><br>
-        Alerts fire every 30 min during market hours (09:15–15:30 IST) for <b>VERY STRONG signals only (≥80%)</b>.
-        </div>
-        """, unsafe_allow_html=True)
+        push_method = st.radio(
+            "Push method",
+            ["ntfy.sh (recommended)", "Telegram Bot"],
+            horizontal=True, key="push_method",
+        )
 
-        np1, np2 = st.columns([3, 1])
-        with np1:
-            ntfy_topic = st.text_input(
-                "Your ntfy topic name",
-                placeholder="ama-nifty-yourname-2024",
-                key="ntfy_topic",
-            )
-        with np2:
-            st.markdown("<div style='height:26px'></div>", unsafe_allow_html=True)
-            ntfy_enabled = st.toggle("Enable push", value=False, key="ntfy_enabled")
-            if st.button("📱 Test Push", use_container_width=True, key="btn_test_push"):
-                if ntfy_topic:
-                    ok, msg = send_ntfy_push(
-                        ntfy_topic,
-                        [{"ticker": "RELIANCE", "signal": "BULL", "str": 91.2, "price": 2950.0},
-                         {"ticker": "TCS",      "signal": "BEAR", "str": 84.7, "price": 4120.0}],
-                        now.strftime("%H:%M"),
-                    )
-                    st.success(msg) if ok else st.error(msg)
-                else:
-                    st.warning("Enter a topic name first.")
+        if push_method == "ntfy.sh (recommended)":
+            st.markdown("""
+            <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;
+                 padding:10px 14px;margin-bottom:10px;font-size:11px;color:#1e40af;">
+            <b>ntfy.sh — Free, no account needed, works on Android &amp; iOS</b><br><br>
+            <b>1. Install app:</b>
+            &nbsp; Android: Play Store → <b>ntfy</b> &nbsp;|&nbsp;
+            iPhone: App Store → <b>ntfy</b> (by Philipp Heckel)<br>
+            <b>2. Choose a topic</b> — use only letters/numbers/hyphens e.g.
+            <code>ama-nifty-raj2024</code>. Keep it private.<br>
+            <b>3. In the ntfy app:</b> tap <b>+</b> → type your topic → Subscribe<br>
+            <b>4.</b> Enter same topic below → Enable → Test Push<br><br>
+            <b>Note:</b> Do NOT use underscores in topic name. Use hyphens only.
+            </div>
+            """, unsafe_allow_html=True)
+            np1, np2 = st.columns([3, 1])
+            with np1:
+                ntfy_topic = st.text_input(
+                    "ntfy topic name (letters, numbers, hyphens only)",
+                    placeholder="ama-nifty-yourname-2024",
+                    key="ntfy_topic",
+                )
+            with np2:
+                st.markdown("<div style='height:26px'></div>", unsafe_allow_html=True)
+                ntfy_enabled = st.toggle("Enable ntfy push", value=False, key="ntfy_enabled")
+                test_alerts_sample = [
+                    {"ticker": "RELIANCE", "signal": "BULL", "str": 91.2, "price": 2950.0},
+                    {"ticker": "TCS",      "signal": "BEAR", "str": 84.7, "price": 4120.0},
+                ]
+                if st.button("📱 Test ntfy", use_container_width=True, key="btn_test_ntfy"):
+                    if ntfy_topic:
+                        with st.spinner("Sending..."):
+                            ok, msg = send_ntfy_push(ntfy_topic, test_alerts_sample, now.strftime("%H:%M"))
+                        st.success(msg) if ok else st.error(msg)
+                    else:
+                        st.warning("Enter a topic name first.")
+
+        else:  # Telegram
+            st.markdown("""
+            <div style="background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;
+                 padding:10px 14px;margin-bottom:10px;font-size:11px;color:#0c4a6e;">
+            <b>Telegram Bot — Reliable alternative, works on all phones</b><br><br>
+            <b>1. Create a bot:</b> Open Telegram → search <b>@BotFather</b> → send <code>/newbot</code>
+            → follow steps → copy the <b>bot token</b><br>
+            <b>2. Get your Chat ID:</b> Send any message to your new bot, then open:<br>
+            &nbsp;&nbsp;<code>https://api.telegram.org/bot&lt;TOKEN&gt;/getUpdates</code><br>
+            &nbsp;&nbsp;in a browser. Copy the <b>id</b> number from <code>chat</code> section.<br>
+            <b>3.</b> Paste both below → Enable → Test
+            </div>
+            """, unsafe_allow_html=True)
+            tg1, tg2, tg3 = st.columns([3, 2, 1])
+            with tg1:
+                tg_token = st.text_input(
+                    "Telegram Bot Token",
+                    placeholder="123456:ABCdefGHI...",
+                    type="password",
+                    key="tg_token",
+                )
+            with tg2:
+                tg_chat_id = st.text_input(
+                    "Your Telegram Chat ID",
+                    placeholder="123456789",
+                    key="tg_chat_id",
+                )
+            with tg3:
+                st.markdown("<div style='height:26px'></div>", unsafe_allow_html=True)
+                tg_enabled = st.toggle("Enable Telegram", value=False, key="tg_enabled")
+                test_alerts_tg = [
+                    {"ticker": "RELIANCE", "signal": "BULL", "str": 91.2, "price": 2950.0},
+                    {"ticker": "TCS",      "signal": "BEAR", "str": 84.7, "price": 4120.0},
+                ]
+                if st.button("✈ Test Telegram", use_container_width=True, key="btn_test_tg"):
+                    if tg_token and tg_chat_id:
+                        with st.spinner("Sending..."):
+                            ok, msg = send_telegram_push(tg_token, tg_chat_id, test_alerts_tg, now.strftime("%H:%M"))
+                        st.success(msg) if ok else st.error(msg)
+                    else:
+                        st.warning("Enter bot token and chat ID first.")
 
     # ── Gmail tab ─────────────────────────────────────────────────────────────
     with tab_gmail:
@@ -775,6 +850,36 @@ if run_btn:
             st.toast(f"📧 Alert email sent — {len(new_alerts)} signals", icon="✅")
         else:
             st.toast(msg, icon="❌")
+
+    # ── Send ntfy push ────────────────────────────────────────────────────────
+    if (st.session_state.get("ntfy_enabled", False)
+            and new_alerts
+            and st.session_state.get("ntfy_topic", "").strip()):
+        with st.spinner("Sending push notification..."):
+            ok_p, msg_p = send_ntfy_push(
+                st.session_state.ntfy_topic,
+                new_alerts,
+                scan_time,
+            )
+        log_p = f"{scan_time}: {'OK' if ok_p else 'FAIL'} ntfy — {msg_p}"
+        st.session_state.email_log = ([log_p] + st.session_state.email_log)[:10]
+        st.toast(f"📱 {msg_p}", icon="✅" if ok_p else "❌")
+
+    # ── Send Telegram push ────────────────────────────────────────────────────
+    if (st.session_state.get("tg_enabled", False)
+            and new_alerts
+            and st.session_state.get("tg_token", "").strip()
+            and st.session_state.get("tg_chat_id", "").strip()):
+        with st.spinner("Sending Telegram notification..."):
+            ok_t, msg_t = send_telegram_push(
+                st.session_state.tg_token,
+                st.session_state.tg_chat_id,
+                new_alerts,
+                scan_time,
+            )
+        log_t = f"{scan_time}: {'OK' if ok_t else 'FAIL'} Telegram — {msg_t}"
+        st.session_state.email_log = ([log_t] + st.session_state.email_log)[:10]
+        st.toast(f"✈ {msg_t}", icon="✅" if ok_t else "❌")
 
     if failed:
         st.caption(
