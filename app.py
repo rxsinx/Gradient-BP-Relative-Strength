@@ -1,14 +1,24 @@
 """
-AMA v3.0 — Gradient Backprop + Reversal Strength
+AMA — Gradient Backprop + Reversal Strength
 NIFTY 500 | Kite API (primary) + yfinance (fallback)
-BUGS FIXED:
-  1. Removed @st.cache_resource from kite client  → no more cached wrong connections
-  2. Access token NOT pre-filled from secrets      → user pastes fresh token daily
-  3. Added Disconnect button                       → clears stale state anytime
-  4. OHLC cached with proper keys                  → no rate-limit hammering
-  5. Notification operator precedence fixed        → each channel independent
-  6. ltp() key format verified + guarded           → no crash on bad response
-  7. Timezone-aware datetime everywhere            → no TypeError on subtraction
+
+ROOT CAUSE FIX (Kite auth error):
+  Two-button flow (Generate + Connect) caused Streamlit rerun between clicks.
+  The access token field with value="" was resetting to empty on rerun,
+  so "Connect Kite" always received an empty token → "Incorrect api_key or access_token".
+
+  FIX: Single button "Authorise & Connect" — generates session AND connects
+  in one click, exactly like the working data.py render_kite_login() pattern.
+  request_token is single-use, so it must be consumed in the same execution.
+
+OTHER FIXES:
+  1. No @st.cache_resource on kite client  (cached bad connections permanently)
+  2. Access token NOT pre-filled from secrets (expires midnight daily)
+  3. Disconnect button to clear stale state
+  4. OHLC cached with api_key+token keys (no rate-limit hammering)
+  5. Notification operator precedence fixed
+  6. ltp() key format verified and guarded
+  7. IST-aware datetime throughout
 """
 
 import streamlit as st
@@ -84,8 +94,8 @@ table.t tbody td{padding:7px 12px;text-align:right;color:#334155;font-family:'Je
 table.t tbody td:first-child{text-align:left;font-family:'Inter',sans-serif;}
 table.t tbody td.tc{text-align:center;}
 .tk{font-weight:700;color:#1a1d2e;font-size:11px;cursor:default;}
-.pos{color:#16a34a;font-weight:600;} .neg{color:#dc2626;font-weight:600;} .neu{color:#64748b;}
-.hc{color:#0891b2;font-weight:600;} .hs{color:#475569;}
+.pos{color:#16a34a;font-weight:600;}.neg{color:#dc2626;font-weight:600;}.neu{color:#64748b;}
+.hc{color:#0891b2;font-weight:600;}.hs{color:#475569;}
 .badge{display:inline-flex;align-items:center;padding:2px 8px;border-radius:20px;font-size:9px;font-weight:700;letter-spacing:.5px;font-family:'Inter',sans-serif;}
 .bb{background:#dcfce7;color:#15803d;border:1px solid #bbf7d0;}
 .be{background:#fee2e2;color:#b91c1c;border:1px solid #fecaca;}
@@ -95,10 +105,10 @@ table.t tbody td.tc{text-align:center;}
 .sc{display:flex;align-items:center;gap:6px;justify-content:flex-end;}
 .st{height:4px;width:44px;background:#e2e8f0;border-radius:3px;flex-shrink:0;}
 .sf{height:4px;border-radius:3px;}
-.rvs{color:#15803d;font-weight:600;font-size:10px;} .rs{color:#16a34a;font-weight:500;font-size:10px;}
-.rm{color:#d97706;font-weight:500;font-size:10px;} .rw{color:#ea580c;font-weight:500;font-size:10px;}
+.rvs{color:#15803d;font-weight:600;font-size:10px;}.rs{color:#16a34a;font-weight:500;font-size:10px;}
+.rm{color:#d97706;font-weight:500;font-size:10px;}.rw{color:#ea580c;font-weight:500;font-size:10px;}
 .rvw{color:#94a3b8;font-weight:400;font-size:10px;}
-.rsi-ob{color:#dc2626;font-weight:600;} .rsi-os{color:#16a34a;font-weight:600;} .rsi-n{color:#475569;}
+.rsi-ob{color:#dc2626;font-weight:600;}.rsi-os{color:#16a34a;font-weight:600;}.rsi-n{color:#475569;}
 .stButton>button{background:#1a1d2e!important;color:#fff!important;border:none!important;border-radius:8px!important;font-family:'Inter',sans-serif!important;font-size:12px!important;font-weight:600!important;padding:8px 20px!important;}
 .stButton>button:hover{opacity:.85!important;}
 .stDownloadButton>button{background:#f1f5f9!important;color:#334155!important;border:1px solid #e2e8f0!important;border-radius:8px!important;font-size:11px!important;}
@@ -110,49 +120,7 @@ label[data-testid="stWidgetLabel"]{font-size:11px!important;color:#64748b!import
 
 # ══════════════════════════════════════════════════════════════════════════════
 # KITE API LAYER
-# FIX 1: NO @st.cache_resource — it permanently caches failed connections.
-#         The kite object lives in st.session_state, created fresh on button click.
 # ══════════════════════════════════════════════════════════════════════════════
-
-def kite_connect(api_key: str, access_token: str):
-    """
-    Create and validate a fresh KiteConnect object.
-    Returns (kite_obj, username, error_msg).
-    Called only when user clicks Connect button.
-    """
-    api_key      = (api_key or "").strip()
-    access_token = (access_token or "").strip()
-
-    if not api_key:
-        return None, "", "API Key is empty — enter your Kite API Key"
-    if not access_token:
-        return None, "", "Access Token is empty — generate one first (Step 3)"
-
-    try:
-        from kiteconnect import KiteConnect
-    except ImportError:
-        return None, "", ("kiteconnect not installed. "
-                          "Add 'kiteconnect' to requirements.txt and redeploy.")
-    try:
-        kite = KiteConnect(api_key=api_key)
-        kite.set_access_token(access_token)
-        profile = kite.profile()      # ← validates both key AND token
-        return kite, profile.get("user_name", "User"), ""
-    except Exception as e:
-        err = str(e)
-        # Friendlier message for the most common error
-        if "api_key" in err.lower() or "access_token" in err.lower() or "incorrect" in err.lower():
-            err = (
-                "Incorrect API Key or Access Token.\n\n"
-                "Common causes:\n"
-                "• Access Token expired (it resets every midnight IST) — "
-                "generate a new one using the 3-step flow below.\n"
-                "• API Key typo — copy it exactly from "
-                "developers.kite.trade → Your Apps.\n"
-                "• Request token reused — each request_token works ONCE only."
-            )
-        return None, "", err
-
 
 def kite_login_url(api_key: str) -> str:
     api_key = (api_key or "").strip()
@@ -165,15 +133,70 @@ def kite_login_url(api_key: str) -> str:
         return f"https://kite.zerodha.com/connect/login?api_key={api_key}&v=3"
 
 
-def gen_access_token(api_key: str, api_secret: str, request_token: str):
-    """Exchange request_token → access_token (do once per trading day)."""
+def authorise_and_connect(api_key: str, api_secret: str, request_token: str):
+    """
+    *** KEY FIX ***
+    Single-step: generate_session + validate profile in ONE execution.
+    Mirrors exactly how data.py works (the project that IS connecting correctly).
+
+    request_token is single-use — must be consumed immediately, not across reruns.
+    Returns (access_token, kite_obj, username, error_str).
+    """
+    api_key       = (api_key or "").strip()
+    api_secret    = (api_secret or "").strip()
+    request_token = (request_token or "").strip()
+
+    if not api_key:
+        return "", None, "", "API Key is empty"
+    if not api_secret:
+        return "", None, "", "API Secret is empty"
+    if not request_token:
+        return "", None, "", "request_token is empty — complete Step 1 first"
+
     try:
         from kiteconnect import KiteConnect
-        kite = KiteConnect(api_key=api_key.strip())
-        data = kite.generate_session(request_token.strip(), api_secret=api_secret.strip())
-        return data["access_token"], ""
+    except ImportError:
+        return "", None, "", "kiteconnect not installed — add it to requirements.txt"
+
+    try:
+        kite     = KiteConnect(api_key=api_key)
+        session  = kite.generate_session(request_token, api_secret=api_secret)
+        access_token = session["access_token"]
+        kite.set_access_token(access_token)
+        profile  = kite.profile()
+        username = profile.get("user_name", "User")
+        return access_token, kite, username, ""
     except Exception as e:
-        return "", str(e)
+        msg = str(e)
+        if "token" in msg.lower() or "api_key" in msg.lower() or "incorrect" in msg.lower():
+            msg = (
+                "Token error — most common causes:\n"
+                "• request_token already used (each token works ONCE only — "
+                "re-login to get a fresh one)\n"
+                "• Access token expired (resets every midnight IST)\n"
+                "• API Key mismatch with the app that generated the request_token\n"
+                f"Original error: {msg}"
+            )
+        return "", None, "", msg
+
+
+def connect_with_access_token(api_key: str, access_token: str):
+    """
+    Connect using a pre-generated access token (stored in session/secrets).
+    Returns (kite_obj, username, error_str).
+    """
+    api_key      = (api_key or "").strip()
+    access_token = (access_token or "").strip()
+    if not api_key or not access_token:
+        return None, "", "API Key or Access Token is empty"
+    try:
+        from kiteconnect import KiteConnect
+        kite = KiteConnect(api_key=api_key)
+        kite.set_access_token(access_token)
+        profile = kite.profile()
+        return kite, profile.get("user_name", "User"), ""
+    except Exception as e:
+        return None, "", str(e)
 
 
 # FIX 4: Cache instruments keyed on access_token (24 hr TTL)
@@ -190,7 +213,7 @@ def load_instruments(api_key: str, access_token: str) -> dict:
         return {}
 
 
-# FIX 4: Cache OHLC keyed on api_key+access_token+ticker+interval (30 min TTL)
+# FIX 4: Cache OHLC keyed on access_token+ticker (30 min TTL)
 @st.cache_data(ttl=REFRESH_SECS, show_spinner=False)
 def fetch_kite_ohlc(api_key: str, access_token: str,
                     instrument_token: int, interval: str, days_back: int):
@@ -214,7 +237,7 @@ def fetch_kite_ohlc(api_key: str, access_token: str,
         return None
 
 
-# FIX 6: ltp() uses "NSE:SYMBOL" — verified format, guarded against errors
+# FIX 6: ltp() uses "NSE:SYMBOL" — correct format, fully guarded
 def get_live_price(api_key: str, access_token: str, ticker: str):
     try:
         from kiteconnect import KiteConnect
@@ -229,7 +252,7 @@ def get_live_price(api_key: str, access_token: str, ticker: str):
     return None
 
 
-# ── yfinance fallback (always available) ──────────────────────────────────────
+# ── yfinance fallback ──────────────────────────────────────────────────────────
 @st.cache_data(ttl=REFRESH_SECS, show_spinner=False)
 def fetch_yf(ticker: str, period: str, interval: str):
     try:
@@ -251,7 +274,7 @@ def fetch_yf(ticker: str, period: str, interval: str):
 # ══════════════════════════════════════════════════════════════════════════════
 def calc_kama(hlc3: np.ndarray, er_len=10, fast=6, slow=7) -> np.ndarray:
     fsc, ssc = 2.0/(fast+1), 2.0/(slow+1)
-    n = len(hlc3)
+    n  = len(hlc3)
     ama = np.empty(n); ama[0] = hlc3[0]
     for i in range(1, n):
         if i < er_len:
@@ -300,7 +323,8 @@ def compute_signal(hlc3: np.ndarray, close: np.ndarray, p: dict) -> dict:
         c1  = abs(d2v); c2 = abs(d1v)*abs(d2v); c3 = abs(d3v)*0.1
         raw = c1*p["wa"] + c2*p["wb"] + c3*p["wc"]
         lb  = max(0, n-1-p["lookback"])
-        mA  = np.max(np.abs(d2[lb:])); mD = np.max(np.abs(d1[lb:])*np.abs(d2[lb:]))
+        mA  = np.max(np.abs(d2[lb:]))
+        mD  = np.max(np.abs(d1[lb:])*np.abs(d2[lb:]))
         mJ  = np.max(np.abs(d3[lb:])*0.1)
         mx  = max(1e-9, mA*p["wa"]+mD*p["wb"]+mJ*p["wc"])
         strength = min(100.0, raw/mx*100)
@@ -335,14 +359,13 @@ def scol(s: float, bull: bool) -> str:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# PROCESS TICKER
+# PROCESS TICKER  (Kite → yfinance fallback)
 # ══════════════════════════════════════════════════════════════════════════════
 def process_ticker(ticker: str, p: dict,
                    api_key: str = "", access_token: str = "",
                    instruments: dict = None) -> dict | None:
     df  = None
     src = "yf"
-
     if api_key and access_token and instruments:
         token = instruments.get(ticker)
         if token:
@@ -351,12 +374,10 @@ def process_ticker(ticker: str, p: dict,
             df   = fetch_kite_ohlc(api_key, access_token, int(token), ki, days)
             if df is not None:
                 src = "kite"
-
     if df is None:
         df = fetch_yf(ticker, p["period"], p["interval"])
     if df is None:
         return None
-
     try:
         h    = df["High"].values.astype(float)
         l    = df["Low"].values.astype(float)
@@ -367,7 +388,6 @@ def process_ticker(ticker: str, p: dict,
         sig   = compute_signal(hlc3, c, p)
         price = float(c[-1])
         prev  = float(c[-2]) if len(c)>1 else price
-        # Overlay live Kite price during market hours
         if src=="kite" and api_key and access_token:
             live = get_live_price(api_key, access_token, ticker)
             if live:
@@ -401,8 +421,8 @@ def send_ntfy(topic: str, alerts: list, scan_time: str):
     try:
         import requests as _r
         r = _r.post(f"https://ntfy.sh/{topic}", data=body.encode(),
-                    headers={"Title":title,"Priority":"high","Tags":"bell","Content-Type":"text/plain"},
-                    timeout=12)
+                    headers={"Title":title,"Priority":"high","Tags":"bell",
+                             "Content-Type":"text/plain"}, timeout=12)
         return (True, f"Push sent to '{topic}'") if r.status_code==200 \
                else (False, f"ntfy HTTP {r.status_code}: {r.text[:80]}")
     except Exception as e:
@@ -415,7 +435,8 @@ def send_telegram(token: str, chat_id: str, alerts: list, scan_time: str):
     try:
         import requests as _r
         r = _r.post(f"https://api.telegram.org/bot{token.strip()}/sendMessage",
-                    json={"chat_id":chat_id.strip(),"text":f"*{title}*\n\n{body}","parse_mode":"Markdown"},
+                    json={"chat_id":chat_id.strip(),
+                          "text":f"*{title}*\n\n{body}","parse_mode":"Markdown"},
                     timeout=12)
         if r.status_code==200: return True, f"Telegram sent to {chat_id}"
         return False, f"Telegram: {r.json().get('description', r.text[:60])}"
@@ -428,56 +449,59 @@ def build_email_html(alerts: list, scan_time: str, thr: int) -> str:
     be = [a for a in alerts if a["signal"]=="BEAR"]
     def rows(items, col, lbl):
         if not items:
-            return f'<tr><td colspan="4" style="padding:10px;color:#94a3b8;text-align:center;">No {lbl} signals</td></tr>'
-        out=""
+            return (f'<tr><td colspan="4" style="padding:10px;color:#94a3b8;'
+                    f'text-align:center;">No {lbl} signals</td></tr>')
+        out = ""
         for a in items:
-            bg="#dcfce7" if lbl=="BULL" else "#fee2e2"
-            out+=(f'<tr style="border-bottom:1px solid #f1f5f9;">'
-                  f'<td style="padding:7px 12px;font-weight:700;color:#1a1d2e;">{a["ticker"]}</td>'
-                  f'<td style="padding:7px 12px;text-align:right;color:#334155;">Rs.{a["price"]:,.0f}</td>'
-                  f'<td style="padding:7px 12px;text-align:right;font-weight:700;color:{col};">{a["str"]:.1f}%</td>'
-                  f'<td style="padding:7px 12px;text-align:center;">'
-                  f'<span style="background:{bg};color:{col};border-radius:12px;padding:2px 8px;font-size:10px;font-weight:700;">{lbl}</span>'
-                  f'</td></tr>')
+            bg = "#dcfce7" if lbl=="BULL" else "#fee2e2"
+            out += (f'<tr style="border-bottom:1px solid #f1f5f9;">'
+                    f'<td style="padding:7px 12px;font-weight:700;color:#1a1d2e;">{a["ticker"]}</td>'
+                    f'<td style="padding:7px 12px;text-align:right;">Rs.{a["price"]:,.0f}</td>'
+                    f'<td style="padding:7px 12px;text-align:right;font-weight:700;'
+                    f'color:{col};">{a["str"]:.1f}%</td>'
+                    f'<td style="padding:7px 12px;text-align:center;">'
+                    f'<span style="background:{bg};color:{col};border-radius:12px;'
+                    f'padding:2px 8px;font-size:10px;font-weight:700;">{lbl}</span></td></tr>')
         return out
-    return f"""<html><body style="font-family:Inter,sans-serif;background:#f8f9fc;margin:0;padding:20px;">
-<div style="max-width:640px;margin:0 auto;">
-<div style="background:#1a1d2e;border-radius:10px 10px 0 0;padding:16px 20px;">
-  <div style="color:#f59e0b;font-size:16px;font-weight:700;">AMA Gradient Signal Alert</div>
-  <div style="color:#94a3b8;font-size:11px;margin-top:3px;">NIFTY 500 | {scan_time} IST | Threshold: >={thr}%</div>
-</div>
-<div style="background:#fff;padding:12px 20px;display:flex;gap:10px;border-bottom:1px solid #e8eaf0;">
-  <div style="background:#dcfce7;border-radius:8px;padding:8px 14px;text-align:center;">
-    <div style="font-size:18px;font-weight:700;color:#15803d;">{len(br)}</div>
-    <div style="font-size:9px;color:#16a34a;font-weight:600;">BULL SIGNALS</div></div>
-  <div style="background:#fee2e2;border-radius:8px;padding:8px 14px;text-align:center;">
-    <div style="font-size:18px;font-weight:700;color:#b91c1c;">{len(be)}</div>
-    <div style="font-size:9px;color:#dc2626;font-weight:600;">BEAR SIGNALS</div></div>
-</div>
-<div style="background:#fff;">
-  <div style="padding:7px 20px;background:#f0fdf4;border-bottom:1px solid #bbf7d0;">
-    <span style="font-size:11px;font-weight:700;color:#15803d;">BULLISH REVERSALS</span></div>
-  <table style="width:100%;border-collapse:collapse;font-size:12px;">
-    <thead><tr style="background:#f8f9fc;">
-      <th style="padding:6px 12px;text-align:left;color:#64748b;font-size:9px;">TICKER</th>
-      <th style="padding:6px 12px;text-align:right;color:#64748b;font-size:9px;">PRICE</th>
-      <th style="padding:6px 12px;text-align:right;color:#64748b;font-size:9px;">STR%</th>
-      <th style="padding:6px 12px;text-align:center;color:#64748b;font-size:9px;">SIGNAL</th>
-    </tr></thead><tbody>{rows(br,"#15803d","BULL")}</tbody></table></div>
-<div style="background:#fff;margin-top:1px;">
-  <div style="padding:7px 20px;background:#fef2f2;border-bottom:1px solid #fecaca;">
-    <span style="font-size:11px;font-weight:700;color:#b91c1c;">BEARISH REVERSALS</span></div>
-  <table style="width:100%;border-collapse:collapse;font-size:12px;">
-    <thead><tr style="background:#f8f9fc;">
-      <th style="padding:6px 12px;text-align:left;color:#64748b;font-size:9px;">TICKER</th>
-      <th style="padding:6px 12px;text-align:right;color:#64748b;font-size:9px;">PRICE</th>
-      <th style="padding:6px 12px;text-align:right;color:#64748b;font-size:9px;">STR%</th>
-      <th style="padding:6px 12px;text-align:center;color:#64748b;font-size:9px;">SIGNAL</th>
-    </tr></thead><tbody>{rows(be,"#b91c1c","BEAR")}</tbody></table></div>
-<div style="background:#f8f9fc;border-radius:0 0 10px 10px;padding:10px 20px;
-     border-top:1px solid #e8eaf0;text-align:center;">
-  <p style="font-size:10px;color:#94a3b8;margin:0;">AMA Gradient Backprop | NIFTY 500 | Not investment advice.</p>
-</div></div></body></html>"""
+    return (f'<html><body style="font-family:Inter,sans-serif;background:#f8f9fc;'
+            f'margin:0;padding:20px;"><div style="max-width:640px;margin:0 auto;">'
+            f'<div style="background:#1a1d2e;border-radius:10px 10px 0 0;padding:16px 20px;">'
+            f'<div style="color:#f59e0b;font-size:16px;font-weight:700;">AMA Gradient Signal Alert</div>'
+            f'<div style="color:#94a3b8;font-size:11px;margin-top:3px;">'
+            f'NIFTY 500 | {scan_time} IST | Threshold: >={thr}%</div></div>'
+            f'<div style="background:#fff;padding:12px 20px;display:flex;gap:10px;'
+            f'border-bottom:1px solid #e8eaf0;">'
+            f'<div style="background:#dcfce7;border-radius:8px;padding:8px 14px;text-align:center;">'
+            f'<div style="font-size:18px;font-weight:700;color:#15803d;">{len(br)}</div>'
+            f'<div style="font-size:9px;color:#16a34a;font-weight:600;">BULL</div></div>'
+            f'<div style="background:#fee2e2;border-radius:8px;padding:8px 14px;text-align:center;">'
+            f'<div style="font-size:18px;font-weight:700;color:#b91c1c;">{len(be)}</div>'
+            f'<div style="font-size:9px;color:#dc2626;font-weight:600;">BEAR</div></div></div>'
+            f'<div style="background:#fff;">'
+            f'<div style="padding:7px 20px;background:#f0fdf4;border-bottom:1px solid #bbf7d0;">'
+            f'<span style="font-size:11px;font-weight:700;color:#15803d;">BULLISH REVERSALS</span></div>'
+            f'<table style="width:100%;border-collapse:collapse;font-size:12px;">'
+            f'<thead><tr style="background:#f8f9fc;">'
+            f'<th style="padding:6px 12px;text-align:left;color:#64748b;font-size:9px;">TICKER</th>'
+            f'<th style="padding:6px 12px;text-align:right;color:#64748b;font-size:9px;">PRICE</th>'
+            f'<th style="padding:6px 12px;text-align:right;color:#64748b;font-size:9px;">STR%</th>'
+            f'<th style="padding:6px 12px;text-align:center;color:#64748b;font-size:9px;">SIGNAL</th>'
+            f'</tr></thead><tbody>{rows(br,"#15803d","BULL")}</tbody></table></div>'
+            f'<div style="background:#fff;margin-top:1px;">'
+            f'<div style="padding:7px 20px;background:#fef2f2;border-bottom:1px solid #fecaca;">'
+            f'<span style="font-size:11px;font-weight:700;color:#b91c1c;">BEARISH REVERSALS</span></div>'
+            f'<table style="width:100%;border-collapse:collapse;font-size:12px;">'
+            f'<thead><tr style="background:#f8f9fc;">'
+            f'<th style="padding:6px 12px;text-align:left;color:#64748b;font-size:9px;">TICKER</th>'
+            f'<th style="padding:6px 12px;text-align:right;color:#64748b;font-size:9px;">PRICE</th>'
+            f'<th style="padding:6px 12px;text-align:right;color:#64748b;font-size:9px;">STR%</th>'
+            f'<th style="padding:6px 12px;text-align:center;color:#64748b;font-size:9px;">SIGNAL</th>'
+            f'</tr></thead><tbody>{rows(be,"#b91c1c","BEAR")}</tbody></table></div>'
+            f'<div style="background:#f8f9fc;border-radius:0 0 10px 10px;padding:10px 20px;'
+            f'border-top:1px solid #e8eaf0;text-align:center;">'
+            f'<p style="font-size:10px;color:#94a3b8;margin:0;">'
+            f'AMA Gradient Backprop | NIFTY 500 | Not investment advice.</p>'
+            f'</div></div></body></html>')
 
 
 def send_email(sender: str, password: str, recipient: str,
@@ -500,32 +524,29 @@ def send_email(sender: str, password: str, recipient: str,
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SESSION STATE + SECRETS
-# FIX 2: kite_access_token is NOT loaded from secrets — it expires at midnight.
-#         API Key and Secret ARE loaded (they are permanent).
+# FIX 2: kite_access_token NOT loaded from secrets (expires midnight daily)
 # ══════════════════════════════════════════════════════════════════════════════
-_SS_DEFAULTS = {
+_SS_DEF = {
     "results": [], "alerts": [], "last_scan": None,
     "scanned": False, "email_log": [],
-    # Kite state
     "kite_connected": False, "kite_user": "", "kite_err": "",
-    "kite_ak": "", "kite_at": "",  # stored api_key + access_token used for connection
+    "kite_ak": "", "kite_at": "",
     "instruments": {},
 }
-for k, v in _SS_DEFAULTS.items():
+for k, v in _SS_DEF.items():
     if k not in st.session_state:
         st.session_state[k] = v
 
-# Secrets helper
 _SEC = st.secrets if hasattr(st, "secrets") else {}
 def _sec(key, default=""):
     try:    return str(_SEC.get(key, default) or default)
     except: return default
 
-# Pre-populate from secrets (except access_token)
-_SECRET_KEYS = {
+# Pre-populate from secrets — API Key & Secret (permanent), NOT access_token
+_SK = {
     "kite_api_key":    _sec("kite_api_key"),
     "kite_api_secret": _sec("kite_api_secret"),
-    # ← kite_access_token intentionally NOT here (expires daily)
+    # access_token intentionally excluded — expires at midnight
     "ntfy_topic":      _sec("ntfy_topic"),
     "ntfy_enabled":    _sec("ntfy_enabled","false").lower()=="true",
     "tg_token":        _sec("tg_token"),
@@ -536,12 +557,11 @@ _SECRET_KEYS = {
     "gmail_recipient": _sec("gmail_recipient"),
     "email_enabled":   _sec("email_enabled","false").lower()=="true",
 }
-for k, v in _SECRET_KEYS.items():
+for k, v in _SK.items():
     if k not in st.session_state:
         st.session_state[k] = v
 
 def gcred(key):
-    """Read credential: secret > session_state."""
     s = _sec(key)
     return s if s else str(st.session_state.get(key,"") or "")
 
@@ -552,23 +572,25 @@ params = dict(er_len=10, fast=6, slow=7, ema_len=70, lookback=20,
 
 # ══════════════════════════════════════════════════════════════════════════════
 # NAV BAR
-# FIX 7: Both now and ls are IST-aware → subtraction never raises TypeError
 # ══════════════════════════════════════════════════════════════════════════════
 now   = datetime.now(IST)
 _m    = now.hour*60 + now.minute
 mkt   = now.weekday()<5 and 9*60+15 <= _m <= 15*60+30
-mkt_h = '<span class="mkt-open">● NSE OPEN</span>' if mkt else '<span class="mkt-close">● NSE CLOSED</span>'
-ls    = st.session_state.last_scan
-# FIX 7: guard ls is not None before subtraction
+mkt_h = ('<span class="mkt-open">● NSE OPEN</span>' if mkt
+         else '<span class="mkt-close">● NSE CLOSED</span>')
+ls      = st.session_state.last_scan
 elapsed = int((now-ls).total_seconds()) if ls is not None else REFRESH_SECS+1
-nxt   = f"Next scan {max(0,REFRESH_SECS-elapsed)//60:02d}:{max(0,REFRESH_SECS-elapsed)%60:02d}" if ls else ""
-ksrc  = "Kite API" if st.session_state.kite_connected else "yfinance fallback"
+rem     = max(0, REFRESH_SECS-elapsed)
+nxt     = f"Next scan {rem//60:02d}:{rem%60:02d}" if ls else ""
+ksrc    = "Kite API" if st.session_state.kite_connected else "yfinance fallback"
 
 st.markdown(f"""
 <div class="nav-bar">
   <div style="display:flex;align-items:center;gap:12px;">
-    <div style="width:32px;height:32px;border-radius:8px;background:linear-gradient(135deg,#1a1d2e,#2d3561);
-         display:flex;align-items:center;justify-content:center;font-size:14px;color:#f59e0b;font-weight:700;">⚡</div>
+    <div style="width:32px;height:32px;border-radius:8px;
+         background:linear-gradient(135deg,#1a1d2e,#2d3561);
+         display:flex;align-items:center;justify-content:center;
+         font-size:14px;color:#f59e0b;font-weight:700;">⚡</div>
     <div>
       <div class="nav-title">AMA v3.0 — Gradient Backprop + Reversal Strength</div>
       <div class="nav-sub">NIFTY 500  ·  KAMA  ·  f'(x) f''(x) f'''(x)  ·  {ksrc}  ·  {nxt}</div>
@@ -584,49 +606,49 @@ st.markdown(f"""
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# KITE API PANEL
-# FIX 3: Disconnect button clears all kite state so user can reconnect cleanly
+# KITE API PANEL  ← ROOT CAUSE FIX IS HERE
 # ══════════════════════════════════════════════════════════════════════════════
 with st.expander("🔑  Zerodha Kite API Setup", expanded=not st.session_state.kite_connected):
 
     # Status banner
     if st.session_state.kite_connected:
-        st.markdown(f'<div class="box-ok">✅ Connected as <b>{st.session_state.kite_user}</b>  ·  '
-                    f'{len(st.session_state.instruments):,} NSE instruments loaded  ·  Real-time active</div>',
-                    unsafe_allow_html=True)
+        st.markdown(
+            f'<div class="box-ok">✅ Connected as <b>{st.session_state.kite_user}</b>  ·  '
+            f'{len(st.session_state.instruments):,} NSE instruments loaded</div>',
+            unsafe_allow_html=True)
     elif st.session_state.kite_err:
-        # Show error in full — multiline supported
         for line in st.session_state.kite_err.split("\n"):
             if line.strip():
                 st.markdown(f'<div class="box-err">❌ {line}</div>', unsafe_allow_html=True)
     else:
-        st.markdown('<div class="box-warn">⚠️ Not connected — using yfinance (EOD data only)</div>',
-                    unsafe_allow_html=True)
+        st.markdown(
+            '<div class="box-warn">⚠️ Not connected — using yfinance (EOD data only)</div>',
+            unsafe_allow_html=True)
 
+    # ── How-to box ────────────────────────────────────────────────────────────
     st.markdown("""
     <div class="box-info">
-    <b>One-time setup:</b> Go to
-    <a href="https://developers.kite.trade" target="_blank" style="color:#1d4ed8;">developers.kite.trade</a>
-    → My Apps → Create App → copy <b>API Key</b> and <b>API Secret</b>.<br>
-    Set Redirect URL to: <code>https://127.0.0.1</code> (or your Streamlit app URL).<br><br>
-    <b>Every trading day (access token expires at midnight IST):</b><br>
-    &nbsp; Step 1: Enter API Key below → click <b>Login to Kite</b> link → approve<br>
-    &nbsp; Step 2: Copy the <code>request_token</code> from the redirected URL<br>
-    &nbsp; Step 3: Paste request_token → click <b>Generate Access Token</b> → copy the token shown<br>
-    &nbsp; Step 4: Paste access token in the field → click <b>Connect Kite</b>
+    <b>One-time setup:</b>
+    <a href="https://developers.kite.trade" target="_blank" style="color:#1d4ed8;">
+    developers.kite.trade</a> → My Apps → Create App → copy <b>API Key</b> and <b>API Secret</b>.
+    Set Redirect URL to your Streamlit app URL (or <code>https://127.0.0.1</code>).<br><br>
+    <b>Every trading day</b> (access token resets at midnight IST):<br>
+    &nbsp; <b>Step 1</b> — Enter API Key + Secret → click the <b>Login to Kite ↗</b> link → approve on Zerodha<br>
+    &nbsp; <b>Step 2</b> — Copy the <code>request_token</code> from the URL you are redirected to<br>
+    &nbsp; <b>Step 3</b> — Paste it below → click <b>Authorise &amp; Connect</b> (one click does everything)
     </div>
     """, unsafe_allow_html=True)
 
-    # Row 1: credentials
-    r1a, r1b, r1c = st.columns(3)
-    with r1a:
+    # ── Credential inputs ─────────────────────────────────────────────────────
+    c1, c2 = st.columns(2)
+    with c1:
         api_key_in = st.text_input(
             "Kite API Key",
             value=gcred("kite_api_key"),
             placeholder="e.g. abc123xyz456",
             key="kite_api_key",
         )
-    with r1b:
+    with c2:
         api_secret_in = st.text_input(
             "Kite API Secret",
             value=gcred("kite_api_secret"),
@@ -634,82 +656,65 @@ with st.expander("🔑  Zerodha Kite API Setup", expanded=not st.session_state.k
             placeholder="your_api_secret",
             key="kite_api_secret",
         )
-    with r1c:
-        # FIX 2: Always blank — access token expires nightly
-        access_token_in = st.text_input(
-            "Access Token  (generate fresh each day ↓)",
-            value="",
-            type="password",
-            placeholder="Paste today's access token here",
-            key="kite_access_token_input",
-        )
 
-    # Row 2: action buttons
-    r2a, r2b, r2c, r2d, r2e = st.columns([2.4, 2.4, 1.3, 1.3, 1.1])
+    # Login link — shown as soon as API key is entered
+    if api_key_in:
+        login_url = kite_login_url(api_key_in)
+        st.markdown(
+            f'<div class="box-ok" style="margin:6px 0;">'
+            f'<b>Step 1:</b> '
+            f'<a href="{login_url}" target="_blank" style="color:#1d4ed8;font-weight:700;">'
+            f'Login to Kite ↗</a>'
+            f' → approve → copy the <code>request_token</code> value from the redirect URL'
+            f'</div>',
+            unsafe_allow_html=True)
+    else:
+        st.info("Enter your API Key above to get the Kite login link.")
 
-    with r2a:
-        if api_key_in:
-            url = kite_login_url(api_key_in)
-            st.markdown(
-                f'<div class="box-ok" style="margin-top:4px;">'
-                f'<b>Step 1:</b> <a href="{url}" target="_blank" style="color:#1d4ed8;">Click here to login to Kite</a>'
-                f' → approve → copy <code>request_token</code> from the URL after redirect</div>',
-                unsafe_allow_html=True)
-        else:
-            st.info("Enter API Key to get login link")
-
-    with r2b:
+    # request_token + single action button (THE FIX)
+    ra, rb, rc = st.columns([3, 1, 1])
+    with ra:
         req_tok = st.text_input(
-            "Paste request_token from redirect URL",
-            placeholder="request_token value from URL",
+            "Step 2 — Paste request_token from redirect URL",
+            placeholder="e.g. K3xyz789abc... (from the URL after Kite login)",
             key="req_token_field",
         )
-
-    with r2c:
+    with rb:
         st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
-        if st.button("Generate Token", use_container_width=True, key="btn_gen"):
-            if api_key_in and api_secret_in and req_tok:
-                with st.spinner("Generating…"):
-                    tok, err = gen_access_token(api_key_in, api_secret_in, req_tok)
-                if tok:
-                    st.session_state.kite_access_token_input = tok
-                    st.success("✅ Token generated! Copy it below:")
-                    st.code(tok, language=None)
-                else:
-                    st.error(f"Failed: {err}")
-            else:
-                st.warning("Fill API Key, Secret, and request_token first.")
-
-    with r2d:
-        st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
-        if st.button("Connect Kite", use_container_width=True, key="btn_connect"):
+        # *** THE FIX: single button = generate_session + connect in ONE execution ***
+        # request_token is single-use; consuming it across two separate button-click
+        # reruns was the root cause of "Incorrect api_key or access_token".
+        if st.button("✅ Authorise & Connect", use_container_width=True, key="btn_auth_connect"):
             ak  = (api_key_in or "").strip()
-            # Read access token from the text input field
-            at  = st.session_state.get("kite_access_token_input","").strip()
-            if ak and at:
-                with st.spinner("Connecting to Kite…"):
-                    kite_obj, uname, err = kite_connect(ak, at)
+            aks = (api_secret_in or "").strip()
+            rt  = (req_tok or "").strip()
+            if not ak:
+                st.warning("Enter your API Key first.")
+            elif not aks:
+                st.warning("Enter your API Secret first.")
+            elif not rt:
+                st.warning("Paste the request_token from the redirect URL (Step 2).")
+            else:
+                with st.spinner("Authorising with Zerodha and connecting…"):
+                    access_token, kite_obj, uname, err = authorise_and_connect(ak, aks, rt)
                 if kite_obj:
-                    # Store credentials used (for cached fetch functions)
                     st.session_state.kite_connected = True
                     st.session_state.kite_user      = uname
                     st.session_state.kite_err       = ""
                     st.session_state.kite_ak        = ak
-                    st.session_state.kite_at        = at
+                    st.session_state.kite_at        = access_token
                     with st.spinner("Loading NSE instruments…"):
-                        st.session_state.instruments = load_instruments(ak, at)
-                    st.success(f"✅ Connected as {uname} · {len(st.session_state.instruments):,} instruments")
+                        st.session_state.instruments = load_instruments(ak, access_token)
+                    st.success(
+                        f"✅ Connected as {uname}  ·  "
+                        f"{len(st.session_state.instruments):,} instruments loaded")
                     st.rerun()
                 else:
                     st.session_state.kite_connected = False
                     st.session_state.kite_err       = err
                     st.rerun()
-            else:
-                if not ak: st.warning("Enter your API Key first.")
-                else:      st.warning("Paste the Access Token generated in Step 3.")
-
-    with r2e:
-        # FIX 3: Disconnect button — clears all stale state
+    with rc:
+        # Disconnect / Reset
         st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
         if st.button("Disconnect", use_container_width=True, key="btn_disconnect"):
             st.session_state.kite_connected = False
@@ -718,18 +723,17 @@ with st.expander("🔑  Zerodha Kite API Setup", expanded=not st.session_state.k
             st.session_state.kite_ak        = ""
             st.session_state.kite_at        = ""
             st.session_state.instruments    = {}
-            # Clear cached data so next connection fetches fresh
             try: fetch_kite_ohlc.clear()
             except: pass
             try: load_instruments.clear()
             except: pass
-            st.success("Disconnected. Enter a new Access Token to reconnect.")
             st.rerun()
 
     st.markdown("""
     <div style="font-size:10px;color:#94a3b8;margin-top:6px;">
-    💡 Save <code>kite_api_key</code> and <code>kite_api_secret</code> in Streamlit Secrets
-    (Settings → Secrets) for persistence. Do <b>NOT</b> save access_token — it expires at midnight.
+    💡 Save <code>kite_api_key</code> and <code>kite_api_secret</code> in
+    Streamlit Secrets (Settings → Secrets) — permanent.
+    Do <b>NOT</b> save access_token — it expires every midnight IST.
     </div>""", unsafe_allow_html=True)
 
 
@@ -742,18 +746,21 @@ with st.expander("🔔  Alert Settings  —  Gmail + Mobile Push", expanded=Fals
                {"ticker":"TCS","signal":"BEAR","str":84.7,"price":4120.0}]
 
     with tab_push:
-        method = st.radio("Push method", ["ntfy.sh","Telegram Bot"], horizontal=True, key="push_method")
+        method = st.radio("Push method", ["ntfy.sh","Telegram Bot"],
+                          horizontal=True, key="push_method")
         if method == "ntfy.sh":
-            st.markdown("""<div class="box-info">Install <b>ntfy</b> app (Android/iOS) → tap + →
-            subscribe to your topic. Use hyphens only, no underscores. e.g. <code>ama-nifty-raj2024</code>
-            </div>""", unsafe_allow_html=True)
+            st.markdown("""<div class="box-info">Install <b>ntfy</b> app (Android/iOS) →
+            tap + → subscribe to your topic name. Use hyphens only, no underscores.
+            e.g. <code>ama-nifty-raj2024</code></div>""", unsafe_allow_html=True)
             n1, n2 = st.columns([3,1])
             with n1:
-                st.text_input("ntfy topic (hyphens only)", value=gcred("ntfy_topic"),
+                st.text_input("ntfy topic (hyphens only)",
+                              value=gcred("ntfy_topic"),
                               placeholder="ama-nifty-yourname-2024", key="ntfy_topic")
             with n2:
                 st.markdown("<div style='height:26px'></div>", unsafe_allow_html=True)
-                st.toggle("Enable ntfy", value=bool(st.session_state.get("ntfy_enabled")), key="ntfy_enabled")
+                st.toggle("Enable ntfy",
+                          value=bool(st.session_state.get("ntfy_enabled")), key="ntfy_enabled")
                 if st.button("Test ntfy", use_container_width=True, key="btn_ntfy"):
                     t = st.session_state.get("ntfy_topic","")
                     if t:
@@ -762,19 +769,21 @@ with st.expander("🔔  Alert Settings  —  Gmail + Mobile Push", expanded=Fals
                         st.success(msg) if ok else st.error(msg)
                     else: st.warning("Enter topic first.")
         else:
-            st.markdown("""<div class="box-info">@BotFather → /newbot → copy token.
-            Message your bot → api.telegram.org/bot&lt;TOKEN&gt;/getUpdates → copy chat id.
+            st.markdown("""<div class="box-info">
+            @BotFather → /newbot → copy token. Message your bot →
+            visit api.telegram.org/bot&lt;TOKEN&gt;/getUpdates → copy the id number.
             </div>""", unsafe_allow_html=True)
             t1, t2, t3 = st.columns([3,2,1])
             with t1:
-                st.text_input("Bot Token", value=gcred("tg_token"),
-                              type="password", placeholder="123456:ABCdef…", key="tg_token")
+                st.text_input("Bot Token", value=gcred("tg_token"), type="password",
+                              placeholder="123456:ABCdef…", key="tg_token")
             with t2:
                 st.text_input("Chat ID", value=gcred("tg_chat_id"),
                               placeholder="123456789", key="tg_chat_id")
             with t3:
                 st.markdown("<div style='height:26px'></div>", unsafe_allow_html=True)
-                st.toggle("Enable Telegram", value=bool(st.session_state.get("tg_enabled")), key="tg_enabled")
+                st.toggle("Enable Telegram",
+                          value=bool(st.session_state.get("tg_enabled")), key="tg_enabled")
                 if st.button("Test", use_container_width=True, key="btn_tg"):
                     tok = st.session_state.get("tg_token","")
                     cid = st.session_state.get("tg_chat_id","")
@@ -787,23 +796,26 @@ with st.expander("🔔  Alert Settings  —  Gmail + Mobile Push", expanded=Fals
     with tab_mail:
         m1, m2, m3 = st.columns([2,2,1])
         with m1:
-            st.text_input("Gmail sender",   value=gcred("gmail_sender"),
+            st.text_input("Gmail sender", value=gcred("gmail_sender"),
                           placeholder="you@gmail.com", key="gmail_sender")
-            st.text_input("App Password",   value=gcred("gmail_password"),
-                          type="password", placeholder="abcd efgh ijkl mnop", key="gmail_password")
+            st.text_input("App Password", value=gcred("gmail_password"),
+                          type="password", placeholder="abcd efgh ijkl mnop",
+                          key="gmail_password")
         with m2:
-            st.text_input("Recipient",      value=gcred("gmail_recipient"),
+            st.text_input("Recipient", value=gcred("gmail_recipient"),
                           placeholder="recipient@gmail.com", key="gmail_recipient")
             st.slider("Threshold %", 50, 100, 80, 5, key="alert_threshold")
         with m3:
             st.markdown("<div style='height:26px'></div>", unsafe_allow_html=True)
-            st.toggle("Enable email", value=bool(st.session_state.get("email_enabled")), key="email_enabled")
+            st.toggle("Enable email",
+                      value=bool(st.session_state.get("email_enabled")), key="email_enabled")
             if st.button("Test Email", use_container_width=True, key="btn_email"):
                 s=gcred("gmail_sender"); p=gcred("gmail_password"); r=gcred("gmail_recipient")
                 if s and p and r:
                     with st.spinner("Sending…"):
                         ok, msg = send_email(s.strip(), p.replace(" ",""), r.strip(),
-                            [{"ticker":"RELIANCE","name":"Reliance Industries","signal":"BULL","str":87.5,"price":2950.0}],
+                            [{"ticker":"RELIANCE","name":"Reliance Industries",
+                              "signal":"BULL","str":87.5,"price":2950.0}],
                             now.strftime("%H:%M:%S"), 80)
                     st.success(msg) if ok else st.error(msg)
                 else: st.warning("Fill all email fields first.")
@@ -815,13 +827,18 @@ with st.expander("🔔  Alert Settings  —  Gmail + Mobile Push", expanded=Fals
 # CONTROLS ROW
 # ══════════════════════════════════════════════════════════════════════════════
 c1,c2,c3,c4,c5,c6,c7,c8,c9 = st.columns([2.5,1.4,1.4,1.4,1.1,1.1,1.1,1,1])
-with c1: search   = st.text_input("","",placeholder="🔍 Search ticker…",label_visibility="collapsed")
-with c2: universe = st.selectbox("",["NIFTY 500","NIFTY 50","NIFTY Next 50","Custom"],label_visibility="collapsed")
-with c3: sig_f    = st.selectbox("",["All","↑ Bull","↓ Bear","Strong >=80%","Has Signal"],label_visibility="collapsed")
-with c4: sort_f   = st.selectbox("",["Strength ↓","Change % ↓","RSI ↓","Price ↓","A→Z"],label_visibility="collapsed")
-with c5: rsi_f    = st.selectbox("",["RSI: All","OB >70","OS <30","Neutral"],label_visibility="collapsed")
+with c1: search   = st.text_input("","",placeholder="🔍 Search ticker…",
+                                  label_visibility="collapsed")
+with c2: universe = st.selectbox("",["NIFTY 500","NIFTY 50","NIFTY Next 50","Custom"],
+                                 label_visibility="collapsed")
+with c3: sig_f    = st.selectbox("",["All","↑ Bull","↓ Bear","Strong >=80%","Has Signal"],
+                                 label_visibility="collapsed")
+with c4: sort_f   = st.selectbox("",["Strength ↓","Change % ↓","RSI ↓","Price ↓","A→Z"],
+                                 label_visibility="collapsed")
+with c5: rsi_f    = st.selectbox("",["RSI: All","OB >70","OS <30","Neutral"],
+                                 label_visibility="collapsed")
 with c6:
-    period = st.selectbox("",["3mo","6mo","1y","2y"],label_visibility="collapsed")
+    period = st.selectbox("",["3mo","6mo","1y","2y"], label_visibility="collapsed")
     params["period"] = period
 with c7:
     if st.session_state.kite_connected:
@@ -829,27 +846,32 @@ with c7:
                           label_visibility="collapsed", key="ki_sel")
         params["kite_interval"] = ki
     else:
-        st.markdown("<div style='height:38px;font-size:9px;color:#94a3b8;padding-top:10px;'>yfinance mode</div>",
-                    unsafe_allow_html=True)
+        st.markdown(
+            "<div style='height:38px;font-size:9px;color:#94a3b8;padding-top:10px;'>"
+            "yfinance mode</div>", unsafe_allow_html=True)
 with c8:
     mui = st.selectbox("",["Min 50%","Min 60%","Min 70%","Min 80%","No Filter"],
                        label_visibility="collapsed", key="min_str_sel")
-    _m  = {"Min 50%":50,"Min 60%":60,"Min 70%":70,"Min 80%":80,"No Filter":0}
-    params["min_str"] = _m[mui]; params["filt"] = params["min_str"]>0
+    _mm = {"Min 50%":50,"Min 60%":60,"Min 70%":70,"Min 80%":80,"No Filter":0}
+    params["min_str"] = _mm[mui]; params["filt"] = params["min_str"]>0
 with c9:
     run_btn = st.button("⚡  Scan", use_container_width=True)
 
 tickers_all = list(NIFTY500.keys())
-if universe=="NIFTY 50":        scan_list = tickers_all[:50]
-elif universe=="NIFTY Next 50": scan_list = tickers_all[50:100]
-elif universe=="Custom":
-    scan_list = st.multiselect("Tickers:", tickers_all, default=["RELIANCE","TCS","INFY","HDFCBANK","SBIN"])
+if universe == "NIFTY 50":
+    scan_list = tickers_all[:50]
+elif universe == "NIFTY Next 50":
+    scan_list = tickers_all[50:100]
+elif universe == "Custom":
+    scan_list = st.multiselect("Tickers:", tickers_all,
+        default=["RELIANCE","TCS","INFY","HDFCBANK","SBIN"])
     if not scan_list: scan_list = tickers_all[:50]
-else: scan_list = tickers_all
+else:
+    scan_list = tickers_all
 
 # Auto-refresh (market hours only)
-if mkt and elapsed>=REFRESH_SECS: run_btn = True
-if not st.session_state.scanned:  run_btn = True
+if mkt and elapsed >= REFRESH_SECS: run_btn = True
+if not st.session_state.scanned:    run_btn = True
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -863,11 +885,12 @@ if run_btn:
     ins = st.session_state.instruments
 
     for idx, tk in enumerate(scan_list):
-        src_label = "[KITE]" if (ak and at and ins.get(tk)) else "[YF]"
-        prog.progress((idx+1)/len(scan_list), text=f"{src_label} {tk}  ({idx+1}/{len(scan_list)})")
+        src_lbl = "[KITE]" if (ak and at and ins.get(tk)) else "[YF]"
+        prog.progress((idx+1)/len(scan_list),
+                      text=f"{src_lbl} {tk}  ({idx+1}/{len(scan_list)})")
         r = process_ticker(tk, params, ak, at, ins)
-        if r: results.append(r)
-        else: failed.append(tk)
+        if r:  results.append(r)
+        else:  failed.append(tk)
     prog.empty()
 
     scan_time = datetime.now(IST).strftime("%H:%M:%S")
@@ -876,34 +899,42 @@ if run_btn:
         dict(ts=scan_time, ticker=r["ticker"], name=r["name"],
              signal=r["signal"], str=r["strength"], price=r["price"])
         for r in results
-        if r["signal"]!="NONE" and r["strength"]>=thr
+        if r["signal"] != "NONE" and r["strength"] >= thr
     ]
     st.session_state.alerts    = (new_alerts + st.session_state.alerts)[:100]
     st.session_state.results   = results
     st.session_state.last_scan = datetime.now(IST)
     st.session_state.scanned   = True
 
-    # FIX 5: Each channel is checked independently with proper parentheses
+    # FIX 5: Each notification channel checked independently
     if new_alerts:
-        # Email
-        email_on = (gcred("email_enabled")=="True" or bool(st.session_state.get("email_enabled")))
+        email_on = (gcred("email_enabled")=="True"
+                    or bool(st.session_state.get("email_enabled")))
         if email_on and gcred("gmail_sender") and gcred("gmail_password") and gcred("gmail_recipient"):
-            ok, msg = send_email(gcred("gmail_sender").strip(), gcred("gmail_password").replace(" ",""),
-                                 gcred("gmail_recipient").strip(), new_alerts, scan_time, thr)
-            st.session_state.email_log = ([f"{scan_time}: {'OK' if ok else 'FAIL'} email — {msg}"]
-                                          + st.session_state.email_log)[:10]
-        # ntfy
-        ntfy_on = (gcred("ntfy_enabled")=="True" or bool(st.session_state.get("ntfy_enabled")))
+            ok, msg = send_email(gcred("gmail_sender").strip(),
+                                 gcred("gmail_password").replace(" ",""),
+                                 gcred("gmail_recipient").strip(),
+                                 new_alerts, scan_time, thr)
+            st.session_state.email_log = (
+                [f"{scan_time}: {'OK' if ok else 'FAIL'} email — {msg}"]
+                + st.session_state.email_log)[:10]
+
+        ntfy_on = (gcred("ntfy_enabled")=="True"
+                   or bool(st.session_state.get("ntfy_enabled")))
         if ntfy_on and gcred("ntfy_topic").strip():
             ok, msg = send_ntfy(gcred("ntfy_topic"), new_alerts, scan_time)
-            st.session_state.email_log = ([f"{scan_time}: {'OK' if ok else 'FAIL'} ntfy — {msg}"]
-                                          + st.session_state.email_log)[:10]
-        # Telegram
-        tg_on = (gcred("tg_enabled")=="True" or bool(st.session_state.get("tg_enabled")))
+            st.session_state.email_log = (
+                [f"{scan_time}: {'OK' if ok else 'FAIL'} ntfy — {msg}"]
+                + st.session_state.email_log)[:10]
+
+        tg_on = (gcred("tg_enabled")=="True"
+                 or bool(st.session_state.get("tg_enabled")))
         if tg_on and gcred("tg_token").strip() and gcred("tg_chat_id").strip():
-            ok, msg = send_telegram(gcred("tg_token"), gcred("tg_chat_id"), new_alerts, scan_time)
-            st.session_state.email_log = ([f"{scan_time}: {'OK' if ok else 'FAIL'} telegram — {msg}"]
-                                          + st.session_state.email_log)[:10]
+            ok, msg = send_telegram(gcred("tg_token"), gcred("tg_chat_id"),
+                                    new_alerts, scan_time)
+            st.session_state.email_log = (
+                [f"{scan_time}: {'OK' if ok else 'FAIL'} telegram — {msg}"]
+                + st.session_state.email_log)[:10]
 
     kn    = sum(1 for r in results if r.get("src")=="kite")
     parts = [f"✅ {len(results)} tickers scanned"]
@@ -925,20 +956,26 @@ if results:
     nsig = sum(1 for r in results if r["signal"]!="NONE")
     avgs = np.mean([r["strength"] for r in results if r["signal"]!="NONE"] or [0])
     nk   = sum(1 for r in results if r.get("src")=="kite")
-    ls_s = st.session_state.last_scan.strftime("%H:%M  %d %b") if st.session_state.last_scan else "—"
+    ls_s = (st.session_state.last_scan.strftime("%H:%M  %d %b")
+            if st.session_state.last_scan else "—")
 
     st.markdown(f"""
     <div class="stats-row">
       <div class="stat-card" style="--accent:#0891b2;"><div class="sc-label">Scanned</div>
-        <div class="sc-val">{len(results)}</div><div class="sc-sub">Kite:{nk} · yf:{len(results)-nk}</div></div>
+        <div class="sc-val">{len(results)}</div>
+        <div class="sc-sub">Kite:{nk} · yf:{len(results)-nk}</div></div>
       <div class="stat-card" style="--accent:#16a34a;"><div class="sc-label">Bull Signals</div>
-        <div class="sc-val">{nb}</div><div class="sc-sub">{nb/len(results)*100:.1f}% of universe</div></div>
+        <div class="sc-val">{nb}</div>
+        <div class="sc-sub">{nb/len(results)*100:.1f}% of universe</div></div>
       <div class="stat-card" style="--accent:#dc2626;"><div class="sc-label">Bear Signals</div>
-        <div class="sc-val">{nr}</div><div class="sc-sub">{nr/len(results)*100:.1f}% of universe</div></div>
-      <div class="stat-card" style="--accent:#f59e0b;"><div class="sc-label">Very Strong >=80%</div>
-        <div class="sc-val">{nvs}</div><div class="sc-sub">High confidence</div></div>
+        <div class="sc-val">{nr}</div>
+        <div class="sc-sub">{nr/len(results)*100:.1f}% of universe</div></div>
+      <div class="stat-card" style="--accent:#f59e0b;"><div class="sc-label">Very Strong ≥80%</div>
+        <div class="sc-val">{nvs}</div>
+        <div class="sc-sub">High confidence</div></div>
       <div class="stat-card" style="--accent:#7c3aed;"><div class="sc-label">Avg Strength</div>
-        <div class="sc-val">{avgs:.1f}%</div><div class="sc-sub">Across {nsig} signals</div></div>
+        <div class="sc-val">{avgs:.1f}%</div>
+        <div class="sc-sub">Across {nsig} signals</div></div>
       <div class="stat-card" style="--accent:#64748b;"><div class="sc-label">Last Scan</div>
         <div class="sc-val" style="font-size:16px;">{ls_s}</div>
         <div class="sc-sub">30-min auto in mkt hours</div></div>
@@ -994,8 +1031,11 @@ if results:
     def _s(v,bull):
         if v==0: return '<span class="neu">—</span>'
         sc=scol(v,bull)
-        return(f'<div class="sc"><span style="font-weight:600;font-size:11px;min-width:36px;text-align:right;color:{sc};">{v:.1f}%</span>'
-               f'<div class="st"><div class="sf" style="width:{v}%;background:{sc};"></div></div></div>')
+        return (f'<div class="sc">'
+                f'<span style="font-weight:600;font-size:11px;min-width:36px;'
+                f'text-align:right;color:{sc};">{v:.1f}%</span>'
+                f'<div class="st"><div class="sf" style="width:{v}%;background:{sc};"></div></div>'
+                f'</div>')
     def _rt(v):
         if v==0: return '<span class="rvw">—</span>'
         rt,cls,_=get_rating(v)
@@ -1005,8 +1045,8 @@ if results:
         if s=="BEAR": return '<span class="badge be">↓ BEAR</span>'
         return '<span class="badge bn">—</span>'
     def _src(s):
-        return('<span class="badge bk">KITE</span>' if s=="kite"
-               else '<span class="badge by">YF</span>')
+        return ('<span class="badge bk">KITE</span>' if s=="kite"
+                else '<span class="badge by">YF</span>')
 
     tbody=""
     for r in rows:
@@ -1054,51 +1094,65 @@ if results:
     st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
     fa, fb, fc = st.columns([4,1,1])
     with fa:
-        ls_l=(st.session_state.last_scan.strftime("%d %b %Y  %H:%M:%S IST")
-              if st.session_state.last_scan else "—")
-        st.markdown(f'<div style="font-size:10px;color:#94a3b8;padding-top:6px;">'
-                    f'{len(rows)} rows  ·  {len(results)} scanned  ·  Last: {ls_l}'
-                    f'  ·  Source: {"Kite API" if st.session_state.kite_connected else "yfinance"}'
-                    f'  ·  Not investment advice</div>', unsafe_allow_html=True)
+        ls_l = (st.session_state.last_scan.strftime("%d %b %Y  %H:%M:%S IST")
+                if st.session_state.last_scan else "—")
+        st.markdown(
+            f'<div style="font-size:10px;color:#94a3b8;padding-top:6px;">'
+            f'{len(rows)} rows  ·  {len(results)} scanned  ·  Last: {ls_l}'
+            f'  ·  Source: {"Kite API" if st.session_state.kite_connected else "yfinance"}'
+            f'  ·  Not investment advice</div>',
+            unsafe_allow_html=True)
     with fb:
-        df_o=pd.DataFrame([{"Ticker":r["ticker"],"Price":round(r["price"],2),
-            "Chg%":round(r["chg"],2),"HLC3":r["hlc3"],"AMA":r["ama"],"EMA70":r["ema70"],
-            "f'(x)%":r["d1"],"f''(x)%":r["d2"],"f'''(x)%":r["d3"],
-            "RSI":r["rsi"],"Str%":r["strength"],
-            "Rating":get_rating(r["strength"])[0] if r["signal"]!="NONE" else "—",
-            "Signal":r["signal"],"Source":r.get("src","yf")} for r in rows])
-        ts=datetime.now(IST).strftime("%Y%m%d_%H%M")
+        df_o = pd.DataFrame([{
+            "Ticker":    r["ticker"], "Price":    round(r["price"],2),
+            "Chg%":     round(r["chg"],2), "HLC3": r["hlc3"],
+            "AMA":      r["ama"], "EMA70":   r["ema70"],
+            "f'(x)%":  r["d1"], "f''(x)%": r["d2"], "f'''(x)%": r["d3"],
+            "RSI":      r["rsi"], "Str%":   r["strength"],
+            "Rating":   get_rating(r["strength"])[0] if r["signal"]!="NONE" else "—",
+            "Signal":   r["signal"], "Source": r.get("src","yf"),
+        } for r in rows])
+        ts = datetime.now(IST).strftime("%Y%m%d_%H%M")
         st.download_button("⬇ Export CSV", df_o.to_csv(index=False),
-            file_name=f"AMA_NIFTY500_{ts}.csv", mime="text/csv", use_container_width=True)
+            file_name=f"AMA_NIFTY500_{ts}.csv", mime="text/csv",
+            use_container_width=True)
     with fc:
         if st.session_state.alerts:
             with st.expander(f"🔔 Alerts ({len(st.session_state.alerts)})"):
                 for a in st.session_state.alerts[:20]:
                     bl=a["signal"]=="BULL"; cl="#15803d" if bl else "#b91c1c"
-                    st.markdown(f'<div style="font-size:10px;padding:4px 0;border-bottom:1px solid #f1f5f9;">'
-                                f'<span style="color:{cl};font-weight:600;">{"↑" if bl else "↓"} {a["ticker"]}</span>'
-                                f'  <span style="color:#94a3b8;">{a["str"]:.1f}%  ·  {a["ts"]}</span></div>',
-                                unsafe_allow_html=True)
+                    st.markdown(
+                        f'<div style="font-size:10px;padding:4px 0;'
+                        f'border-bottom:1px solid #f1f5f9;">'
+                        f'<span style="color:{cl};font-weight:600;">'
+                        f'{"↑" if bl else "↓"} {a["ticker"]}</span>'
+                        f'  <span style="color:#94a3b8;">'
+                        f'{a["str"]:.1f}%  ·  {a["ts"]}</span></div>',
+                        unsafe_allow_html=True)
 else:
     st.markdown("""
-    <div style="text-align:center;padding:60px 20px;background:#fff;border:1px solid #e8eaf0;
-         border-radius:12px;margin-top:10px;">
+    <div style="text-align:center;padding:60px 20px;background:#fff;
+         border:1px solid #e8eaf0;border-radius:12px;margin-top:10px;">
       <div style="font-size:36px;margin-bottom:10px;">⚡</div>
-      <div style="font-size:15px;font-weight:600;color:#1a1d2e;margin-bottom:5px;">Ready to scan NIFTY 500</div>
+      <div style="font-size:15px;font-weight:600;color:#1a1d2e;margin-bottom:5px;">
+        Ready to scan NIFTY 500</div>
       <div style="font-size:11px;color:#94a3b8;">
-        Connect Kite API above for real-time data, or click Scan to use yfinance (EOD data).</div>
+        Connect Kite API above for real-time data,
+        or click Scan to use yfinance (EOD data).</div>
     </div>""", unsafe_allow_html=True)
 
 st.markdown("""
 <div style="text-align:center;color:#cbd5e1;font-size:9px;letter-spacing:1px;
      border-top:1px solid #e8eaf0;padding:8px 0;margin-top:10px;">
-  AMA v3.0  ·  GRADIENT BACKPROP ENGINE  ·  NIFTY 500  ·  Kite API + yfinance  ·  Not investment advice
+  AMA v3.0  ·  GRADIENT BACKPROP  ·  NIFTY 500  ·  Kite API + yfinance  ·
+  Not investment advice
 </div>""", unsafe_allow_html=True)
 
 # Auto-rerun (market hours only, every 30 min)
 if st.session_state.last_scan:
     now_c = datetime.now(IST)
-    mc    = now_c.weekday()<5 and 9*60+15 <= now_c.hour*60+now_c.minute <= 15*60+30
+    mc    = (now_c.weekday()<5
+             and 9*60+15 <= now_c.hour*60+now_c.minute <= 15*60+30)
     if mc and int((now_c-st.session_state.last_scan).total_seconds()) >= REFRESH_SECS:
         time.sleep(2)
         st.rerun()
